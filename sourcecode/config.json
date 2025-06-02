@@ -1,0 +1,10 @@
+{
+  "IP": "Insert IP Here.",
+  "Port": 25565,
+  "CheckInterval": 2.5,
+  "LogFolder": "logs",
+  "_comment1": "This is the server address to monitor. Default Minecraft port is usually 25565. Change if needed.",
+  "_comment2": "CheckInterval is how often the server is checked (in seconds). 2.5 seconds is optimal and usually good enough for normal tier spying. Lower values may introduce latency or overload some systems.",
+  "_comment3": "LogFolder is where logs are stored. Default is 'logs'. You can change it to any folder name you want. Best run with VSCode or Notepad++ to search for moments when players are on.",
+  "_comment4": "The notification sound is for when people join or leave. Don't be spooked — it's just a simple beep to let you know someone's there. It won't break your headphones unless you're already deaf."
+}

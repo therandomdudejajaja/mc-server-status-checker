@@ -1,0 +1,175 @@
+import time
+import os
+import threading
+import winsound
+from mcstatus import JavaServer
+from tkinter import *
+from queue import Queue
+
+# === CONFIGURATION ===
+SERVER_IP = "176.57.171.171"      # Your server IP
+SERVER_PORT = 25565               # Usually 25565 unless different
+CHECK_INTERVAL = 2.5              # Seconds between checks
+LOG_FOLDER = "logs"               # Folder to store logs
+SOUND_FREQUENCY = 1000            # Hz
+SOUND_DURATION = 800              # ms
+
+# === INITIALIZATION ===
+server = JavaServer(SERVER_IP, SERVER_PORT)
+last_player_count = 0
+last_players = set()
+log_index = 0
+
+# Set up log folder
+os.makedirs(LOG_FOLDER, exist_ok=True)
+
+# Setup message queue for thread-safe updates
+log_queue = Queue()
+notification_queue = Queue()
+
+# Generate log filename once per run
+timestamp_header = time.strftime("%I:%M %p; %m/%d/%Y")
+separator = "-" * (len(timestamp_header) + 22)
+log_file_name = f"log{log_index}.log"
+while os.path.exists(os.path.join(LOG_FOLDER, log_file_name)):
+    log_index += 1
+    log_file_name = f"log{log_index}.log"
+log_path = os.path.join(LOG_FOLDER, log_file_name)
+
+# Start logging to file
+log_buffer = []
+
+def get_log_header(start_time):
+    timestamp = time.strftime("%I:%M %p; %m/%d/%Y", start_time)
+    separator_line = "-" * (len(timestamp) + 22)
+    return f"{separator_line}\n{timestamp}\n{separator_line}\n\n"
+
+def get_log_footer(end_time):
+    timestamp = time.strftime("%I:%M %p; %m/%d/%Y", end_time)
+    separator_line = "-" * (len(timestamp) + 22)
+    return f"\n{separator_line}\n{timestamp}\n{separator_line}\n"
+
+def format_players(players):
+    """Format players as 'name;' on separate lines"""
+    return '\n'.join([f"{player};" for player in players])
+
+def write_full_log(start_time, end_time=None):
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write(get_log_header(start_time))
+        f.write('\n'.join(log_buffer))
+        if end_time:
+            f.write(get_log_footer(end_time))
+
+def play_notification_sound():
+    winsound.Beep(SOUND_FREQUENCY, SOUND_DURATION)
+
+def show_notification(title, message):
+    notification_queue.put((title, message))
+
+# --- GUI Setup ---
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Minecraft Server Status Checker (MCSSC)")
+        self.root.geometry("312x720")  # Starting size
+
+        # Fix width, allow vertical resizing
+        self.root.resizable(width=False, height=True)
+
+        # Text box
+        self.log_text = Text(self.root, wrap='word', state='disabled', bg='black', fg='lightgreen', font=("Courier", 9))
+        self.log_text.pack(side="left", fill="both", expand=True)
+
+        # Scrollbar
+        self.scrollbar = Scrollbar(self.root, command=self.log_text.yview)
+        self.scrollbar.pack(side="right", fill="y")
+        self.log_text.configure(yscrollcommand=self.scrollbar.set)
+
+        # Track auto-scroll
+        self.auto_scroll = True
+
+        # Bind scroll event
+        self.log_text.bind("<MouseWheel>", self.on_scroll)
+
+        # Start background tasks
+        self.start_time = time.localtime()
+        self.update_log_display()
+        self.background_thread = threading.Thread(target=self.run_server_check, daemon=True)
+        self.background_thread.start()
+        self.notification_handler()
+
+    def on_scroll(self, event=None):
+        # If scrolled up, disable auto-scroll
+        self.auto_scroll = (self.log_text.yview()[1] >= 0.99)
+
+    def update_log_display(self):
+        while not log_queue.empty():
+            line = log_queue.get_nowait()
+            self.log_text.config(state='normal')
+            self.log_text.insert(END, line + "\n")
+            if self.auto_scroll:
+                self.log_text.see(END)
+            self.log_text.config(state='disabled')
+        self.root.after(100, self.update_log_display)
+
+    def run_server_check(self):
+        global last_player_count, last_players
+        try:
+            while True:
+                try:
+                    status = server.status()
+                    current_online = status.players.online
+                    current_players = set(player.name for player in status.players.sample or [])
+
+                    # Use 12-hour format with AM/PM
+                    timestamp = time.strftime("[%I:%M:%S %p]")
+
+                    player_list = format_players(current_players)
+
+                    log_block = f"{timestamp} Players online: {current_online}\nPlayers:\n{player_list}\n--------------------------------------------"
+                    log_buffer.append(log_block)
+                    log_queue.put(log_block)
+                    write_full_log(self.start_time)
+
+                    # Check for change in player count
+                    if current_online != last_player_count:
+                        diff = current_online - last_player_count
+                        if diff > 0:
+                            new_players = list(current_players - last_players)
+                            msg = f"🎉 Player(s) joined:\n{', '.join(new_players)}"
+                        elif diff < 0:
+                            left_players = list(last_players - current_players)
+                            msg = f"👋 Player(s) left:\n{', '.join(left_players)}"
+                        else:
+                            msg = f"⚠️ Player count changed!\n{last_player_count} → {current_online}"
+
+                        show_notification("Player Status Changed", msg)
+
+                    # Update last known values
+                    last_player_count = current_online
+                    last_players = current_players
+
+                except Exception as e:
+                    error_msg = f"[Error] Could not reach server: {e}"
+                    log_buffer.append(error_msg)
+                    log_queue.put(error_msg)
+
+                time.sleep(CHECK_INTERVAL)
+
+        except KeyboardInterrupt:
+            end_time = time.localtime()
+            write_full_log(self.start_time, end_time)
+
+    def notification_handler(self):
+        while not notification_queue.empty():
+            title, message = notification_queue.get_nowait()
+            print(f"--------------[ Notification ]--------------\n{message}\n--------------------------------------------")
+            play_notification_sound()
+        self.root.after(100, self.notification_handler)
+
+
+# Run the GUI
+if __name__ == "__main__":
+    root = Tk()
+    app = App(root)
+    root.mainloop()

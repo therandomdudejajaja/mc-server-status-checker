@@ -1,0 +1,175 @@
+import time
+import os
+import json
+import sys
+import threading
+from mcstatus import JavaServer
+import winsound
+from queue import Queue
+
+# === DYNAMIC CONFIG LOADING ===
+try:
+    if getattr(sys, 'frozen', False):
+        # Running as compiled .exe
+        app_path = os.path.dirname(sys.executable)
+    else:
+        # Running as Python script
+        app_path = os.path.dirname(os.path.realpath(__file__))
+    
+    config_path = os.path.join(app_path, "config.json")
+    
+    with open(config_path, "r") as f:
+        config = json.load(f)
+    
+    SERVER_IP = config.get("IP", "localhost")
+    SERVER_PORT = config.get("Port", 25565)
+    CHECK_INTERVAL = config.get("CheckInterval", 2.5)
+    LOG_FOLDER = config.get("LogFolder", "logs")
+    _comment1 = config.get("_comment1", "")
+    _comment2 = config.get("_comment2", "")
+    _comment3 = config.get("_comment3", "")
+    _comment4 = config.get("_comment4", "")
+
+except Exception as e:
+    print(f"[ERROR] Could not load config.json: {e}")
+    SERVER_IP = "localhost"
+    SERVER_PORT = 25565
+    CHECK_INTERVAL = 2.5
+    LOG_FOLDER = "logs"
+
+# Set up log folder
+log_folder_path = os.path.join(app_path, LOG_FOLDER)
+os.makedirs(log_folder_path, exist_ok=True)
+
+# === CONFIGURATION ===
+SOUND_FREQUENCY = 1000            # Hz
+SOUND_DURATION = 800              # ms
+
+# === INITIALIZATION ===
+try:
+    server = JavaServer(SERVER_IP, SERVER_PORT)
+except Exception as e:
+    print(f"[ERROR] Could not initialize server connection: {e}")
+    input("Press Enter to exit...")
+    sys.exit(1)
+
+last_player_count = 0
+last_players = set()
+log_index = 0
+
+# Set up log folder
+os.makedirs(LOG_FOLDER, exist_ok=True)
+
+# Setup for thread-safe message queue
+notification_queue = Queue()
+
+# Generate log filename once per run
+timestamp_header = time.strftime("%I:%M %p; %m/%d/%Y")
+separator = "-" * (len(timestamp_header) + 22)
+
+log_file_name = f"log{log_index}.log"
+while os.path.exists(os.path.join(LOG_FOLDER, log_file_name)):
+    log_index += 1
+    log_file_name = f"log{log_index}.log"
+log_path = os.path.join(LOG_FOLDER, log_file_name)
+
+# Start logging to file
+log_buffer = []
+
+print(f"🟢 Starting enhanced Minecraft server monitor for {SERVER_IP}:{SERVER_PORT}")
+print("Edit config.json to change server settings.")
+print("Press CTRL+C to stop.")
+print("-" * 60)
+
+def get_log_header(start_time):
+    timestamp = time.strftime("%I:%M %p; %m/%d/%Y", start_time)
+    separator_line = "-" * (len(timestamp) + 22)
+    return f"{separator_line}\n{timestamp}\n{separator_line}\n\n"
+
+def get_log_footer(end_time):
+    timestamp = time.strftime("%I:%M %p; %m/%d/%Y", end_time)
+    separator_line = "-" * (len(timestamp) + 22)
+    return f"\n{separator_line}\n{timestamp}\n{separator_line}\n"
+
+def format_players(players):
+    """Format players as 'name;' on separate lines"""
+    return '\n'.join([f"{player};" for player in players])
+
+def write_full_log(start_time, end_time=None):
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write(get_log_header(start_time))
+        f.write('\n'.join(log_buffer))
+        if end_time:
+            f.write(get_log_footer(end_time))
+
+def play_notification_sound():
+    winsound.Beep(SOUND_FREQUENCY, SOUND_DURATION)
+
+def show_notification(title, message):
+    notification_queue.put((title, message))
+
+def process_queue():
+    while not notification_queue.empty():
+        title, message = notification_queue.get_nowait()
+        print(f"--------------[ Notification ]--------------\n{message}\n--------------------------------------------")
+        play_notification_sound()
+    threading.Timer(0.1, process_queue).start()  # Check again soon
+
+# Start background queue processor
+threading.Thread(target=process_queue, daemon=True).start()
+
+# Save start time
+start_time = time.localtime()
+
+try:
+    while True:
+        try:
+            status = server.status()
+            current_online = status.players.online
+            current_players = set(player.name for player in status.players.sample or [])
+
+            # Use 12-hour format with AM/PM
+            timestamp = time.strftime("[%I:%M:%S %p]")
+
+            player_list = format_players(current_players)
+
+            log_block = f"{timestamp} Players online: {current_online}\nPlayers:\n{player_list}\n--------------------------------------------"
+            log_buffer.append(log_block)
+
+            print(log_block)
+
+            # Write full log every loop (or could do every X loops)
+            write_full_log(start_time)
+
+            # Check for change in player count
+            if current_online != last_player_count:
+                diff = current_online - last_player_count
+                if diff > 0:
+                    new_players = list(current_players - last_players)
+                    msg = f"🎉 Player(s) joined:\n{', '.join(new_players)}"
+                elif diff < 0:
+                    left_players = list(last_players - current_players)
+                    msg = f"👋 Player(s) left:\n{', '.join(left_players)}"
+                else:
+                    msg = f"⚠️ Player count changed!\n{last_player_count} → {current_online}"
+
+                show_notification("Player Status Changed", msg)
+
+            # Update last known values
+            last_player_count = current_online
+            last_players = current_players
+
+        except Exception as e:
+            error_msg = f"[Error] Could not reach server: {e}"
+            print(error_msg)
+            log_buffer.append(error_msg)
+            print("--------------------------------------------")
+
+        time.sleep(CHECK_INTERVAL)
+
+except KeyboardInterrupt:
+    print("\n🛑 Stopping monitor. Saving final log...")
+    end_time = time.localtime()
+    write_full_log(start_time, end_time)
+    print(f"💾 Log saved to: {log_path}")
+    print("Goodbye!")
