@@ -1,6 +1,6 @@
 # how to use
 easy as balls, git clone this repo or download it and extract into a folder, then `pip install -r requirements.txt` or `pip install mcstatus` if you're lazy which is totally understandable because there's only one third party package.
-get the config_example.json, (optionally copy) rename it to config.json, fill in the ip, slap that bitch into GUI or CLI folders depending on which you wanna use, and just run the exe's, it will print the server player count every 2.5 seconds by default, editable in the config.
+get the config_example.json, (optionally copy) rename it to config.json, fill in the ip, throw that bitch into GUI or CLI folders depending on which you wanna use, and just run the exe's, it will print the server player count every 2.5 seconds by default, editable in the config.
 
 
 
